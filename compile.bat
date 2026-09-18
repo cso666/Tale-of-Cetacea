@@ -1,0 +1,1 @@
+g++ main.cpp -o fish.exe -lgdi32 -lgdiplus -lwinhttp -limm32 -mwindows
