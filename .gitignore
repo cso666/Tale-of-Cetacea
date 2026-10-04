@@ -1,0 +1,16 @@
+# 千万不要把 key 提交上去
+API_key.txt
+
+# 编译产物
+*.exe
+*.o
+*.obj
+
+# 运行时存档
+archive/history.txt
+archive/favor.txt
+archive/*.tmp
+
+# 临时文件
+*.tmp
+*.log
