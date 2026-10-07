@@ -74,10 +74,11 @@ void draw(HWND hwnd) {
     const std::wstring& rel = currentFrame();
     if (rel.empty()) return;
 
-    // 帧图是固定像素的，窗口按 DPI 放大后必须同步放大绘制矩形，
-    // 否则图像只占窗口左上角一小块。
-    const int drawW = dpi::scale(layout::kFishW);
-    const int drawH = dpi::scale(layout::kFishH);
+    // 帧图是固定像素的。因为进程现在是 DPI 感知的，Windows 不会再替我们拉伸，
+    // 所以必须用 fixedAssetSize 自己把物理尺寸放大回"维持原有观感"的大小。
+    // 否则 150% 缩放下桌宠会突然变小。
+    const int drawW = dpi::fixedAssetSize(layout::kFishW);
+    const int drawH = dpi::fixedAssetSize(layout::kFishH);
 
     HDC screenDC = GetDC(nullptr);
     if (!screenDC) return;
@@ -197,8 +198,8 @@ bool startEating(const std::wstring& filePath) {
 // 2752 / 1120 是未缩放坐姿帧上的实测比例，这里按 DPI 后的显示高度等比换算，
 // 保证坐姿在任何缩放比下都刚好压住任务栏而不是浮空或陷进去。
 static int sitBottomOffset() {
-    double scale = (double)dpi::scale(layout::kFishH) / 2752.0;
-    return (int)(1120 * scale) + dpi::scale(5);
+    double scale = (double)dpi::fixedAssetSize(layout::kFishH) / 2752.0;
+    return (int)(1120 * scale) + dpi::fixedAssetSize(5);
 }
 
 void watchTaskbar(HWND hwnd) {
@@ -218,7 +219,7 @@ void watchTaskbar(HWND hwnd) {
             g_sitForward = true;
             g_sitHoldLast = false;
 
-            const int fishH = dpi::scale(layout::kFishH);
+            const int fishH = dpi::fixedAssetSize(layout::kFishH);
             int y = trc.top - fishH + sitBottomOffset();
             SetWindowPos(hwnd, nullptr, frc.left, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
             draw(hwnd);
@@ -245,7 +246,7 @@ void sitOnTaskbar(HWND hwnd) {
     GetWindowRect(hwnd, &fish);
     int fishW = fish.right - fish.left;
 
-    const int fishH = dpi::scale(layout::kFishH);
+    const int fishH = dpi::fixedAssetSize(layout::kFishH);
     int x = rc.right - fishW;
     int y = rc.top - fishH + sitBottomOffset();
 

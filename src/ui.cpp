@@ -7,6 +7,7 @@
 #include "config.h"
 #include "textutils.h"
 #include "dpi.h"
+#include "whitewin.h"
 
 #include <string>
 #include <thread>
@@ -19,6 +20,8 @@ namespace {
 const char* kPetClass = "DeepSeekFishWindow";
 const char* kInputClass = "InputBoxWnd";
 const char* kBubbleClass = "BubbleWnd";
+
+HWND g_petWnd = nullptr;
 
 HWND         g_inputWnd = nullptr;
 std::wstring g_inputText;
@@ -55,21 +58,24 @@ void commitInput() {
 
 void startRequest(HWND petWnd, const char* utf8Msg) {
     std::string msg = utf8Msg;
+    // 当前生效模式由第二个页签上的开关决定，这里取一次并固定下来，
+    // 避免请求飞行途中用户切换开关导致历史写到另一套去。
+    int mode = state::currentMode();
     {
         std::lock_guard<std::mutex> lk(state::g_mutex);
         // 上一句还没回来就先不叠请求
         if (state::g_requestInFlight) return;
         state::g_requestInFlight = true;
         // 立刻落历史，这样即使随后请求失败，这句也不会凭空消失
-        state::appendTurn("user", msg);
-        state::saveHistory();
+        state::appendTurn(mode, "user", msg);
+        state::persist();
     }
 
-    std::thread t([](HWND h, std::string m) {
-        chat::ask(h, config::apiKey, m);
+    std::thread t([](HWND h, int md, std::string m) {
+        chat::ask(h, md, config::apiKey, m);
         std::lock_guard<std::mutex> lk(state::g_mutex);
         state::g_requestInFlight = false;
-    }, petWnd, msg);
+    }, petWnd, mode, msg);
     t.detach();
 }
 
@@ -164,10 +170,10 @@ void createBubble(HWND parent, const std::wstring& text) {
 
     RECT rc;
     GetWindowRect(parent, &rc);
-    int x = rc.left + dpi::scale(layout::kFishW) + dpi::scale(10);
+    int x = rc.left + layout::kFishW + 10;
     int y = rc.top;
 
-    const int bubbleW = dpi::scale(layout::kBubbleW);
+    const int bubbleW = layout::kBubbleW;
 
     g_bubbleText = text;
     int h = render::bubbleHeight(text, bubbleW);
@@ -200,14 +206,14 @@ void createChatInput(HWND parent, HINSTANCE hInst) {
     RECT rc;
     GetWindowRect(parent, &rc);
     int x = rc.left;
-    int y = rc.top - dpi::scale(120);
-    if (y < 0) y = rc.bottom + dpi::scale(10);
+    int y = rc.top - 120;
+    if (y < 0) y = rc.bottom + 10;
 
     g_inputWnd = CreateWindowEx(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kInputClass, "",
         WS_POPUP,
-        x, y, dpi::scale(layout::kChatInputW), dpi::scale(layout::kChatInputH),
+        x, y, layout::kChatInputW, layout::kChatInputH,
         parent, nullptr, hInst, nullptr);
 
     if (!g_inputWnd) return;
@@ -258,18 +264,52 @@ LRESULT CALLBACK PetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     }
+    case WM_RBUTTONUP: {
+        // 右键菜单：打开主窗口 / 关闭
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return 0;
+
+        AppendMenuW(menu, MF_STRING, layout::kMenuOpenMain, L"打开主窗口");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, layout::kMenuQuit, L"关闭");
+
+        POINT pt;
+        GetCursorPos(&pt);
+
+        // 右键菜单要正确消失，必须先 SetForegroundWindow，并在 TrackPopupMenu
+        // 之后补一条 WM_NULL。否则点菜单外面菜单不会关闭。
+        SetForegroundWindow(hwnd);
+        TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+                       pt.x, pt.y, 0, hwnd, nullptr);
+        PostMessage(hwnd, WM_NULL, 0, 0);
+
+        DestroyMenu(menu);
+        return 0;
+    }
+    case WM_COMMAND: {
+        switch (LOWORD(wParam)) {
+        case layout::kMenuOpenMain:
+            // 主窗口可能已被关掉，openOrFocus 会按需重建
+            whitewin::openOrFocus();
+            return 0;
+        case layout::kMenuQuit:
+            // 真正退出：销毁本窗口与主窗口，并结束消息循环
+            whitewin::requestQuit();
+            return 0;
+        }
+        break;
+    }
     case WM_DPICHANGED: {
         // 桌宠被拖到另一块缩放比例不同的显示器上。
+        // 帧图是固定像素资源，物理尺寸要跟着新的缩放比例重算，才不会被看出变大或变小。
         dpi::setDpi((int)LOWORD(wParam));
 
-        // 帧图是固定像素的，窗口物理尺寸必须跟着缩放比例走，
-        // 否则在高 DPI 屏上鱼会显得越来越小。
-        int w = dpi::scale(layout::kFishW);
-        int h = dpi::scale(layout::kFishH);
-        SetWindowPos(hwnd, nullptr, 0, 0, w, h,
+        SetWindowPos(hwnd, nullptr, 0, 0,
+                     dpi::fixedAssetSize(layout::kFishW),
+                     dpi::fixedAssetSize(layout::kFishH),
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
-        // 任务栏本身也随 DPI 变了，重新吸附一次保持贴底
+        // 任务栏位置可能变了，重新吸附一次保持贴底
         pet::sitOnTaskbar(hwnd);
         pet::draw(hwnd);
         return 0;
@@ -313,6 +353,7 @@ LRESULT CALLBACK PetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     case WM_DESTROY:
+        g_petWnd = nullptr;
         PostQuitMessage(0);
         return 0;
     case WM_SETCURSOR:
@@ -336,17 +377,25 @@ HWND createPetWindow(HINSTANCE hInstance) {
     wc.lpszClassName = kPetClass;
     if (!RegisterClass(&wc)) return nullptr;
 
+    // 桌宠帧图是固定像素资源，用 fixedAssetSize 补偿"系统不再自动拉伸"
     HWND hwnd = CreateWindowEx(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         kPetClass,
         "DeepSeek Fish",
         WS_POPUP,
-        dpi::scale(100), dpi::scale(100),
-        dpi::scale(layout::kFishW), dpi::scale(layout::kFishH),
+        100, 100,
+        dpi::fixedAssetSize(layout::kFishW), dpi::fixedAssetSize(layout::kFishH),
         nullptr, nullptr, hInstance, nullptr);
 
-    if (hwnd) DragAcceptFiles(hwnd, TRUE);
+    if (hwnd) {
+        g_petWnd = hwnd;
+        DragAcceptFiles(hwnd, TRUE);
+    }
     return hwnd;
+}
+
+HWND petWindow() {
+    return g_petWnd;
 }
 
 } // namespace ui

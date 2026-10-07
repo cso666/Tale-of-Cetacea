@@ -18,7 +18,11 @@ namespace {
 
 std::wstring g_text;
 int g_scroll = 0;      // 当前滚动偏移（像素，>= 0）
-int g_viewW = 0;       // 最近一次绘制时的客户区尺寸
+
+// 内容区在客户区坐标下的位置与尺寸（左侧页签栏已被调用方排除）
+int g_left = 0;
+int g_top = 0;
+int g_viewW = 0;
 int g_viewH = 0;
 
 int clampScroll(int v, int maxS) {
@@ -54,7 +58,7 @@ std::string readWholeFileUtf8(const std::wstring& absPath) {
 }
 
 int visibleHeight() {
-    int h = g_viewH - dpi::scale(layout::kWindowTextPad) * 2;
+    int h = g_viewH - layout::kWindowTextPad * 2;
     return h < 1 ? 1 : h;
 }
 
@@ -68,7 +72,9 @@ int measureContentHeight(int width) {
 
     Graphics g(memDC);
     FontFamily ff(DSF_TEXT_FONT);
-    Font font(&ff, dpi::scale(layout::kWindowTextSize), FontStyleRegular, UnitPixel);
+    // 字号是固定像素资源，用 fixedAssetSize 保持原有观感大小。
+    // 注意 Bubble/正文的测量与绘制必须用同一个换算，否则高度算不准。
+    Font font(&ff, dpi::fixedAssetSize(layout::kWindowTextSize), FontStyleRegular, UnitPixel);
     RectF box(0, 0, (REAL)width, 100000.0f);
     RectF bounds;
     g.MeasureString(g_text.c_str(), -1, &font, box, nullptr, &bounds);
@@ -82,7 +88,7 @@ int measureContentHeight(int width) {
 
 // 不考虑滑块占位时的文字宽度
 int textWidthRaw() {
-    int w = g_viewW - dpi::scale(layout::kWindowTextPad) * 2;
+    int w = g_viewW - layout::kWindowTextPad * 2;
     return w < 1 ? 1 : w;
 }
 
@@ -98,7 +104,7 @@ bool needsScrollBar() {
 int textWidth() {
     int w = textWidthRaw();
     if (needsScrollBar())
-        w -= dpi::scale(layout::kScrollBarW) + dpi::scale(layout::kScrollBarInset) * 2;
+        w -= layout::kScrollBarW + layout::kScrollBarInset * 2;
     return w < 1 ? 1 : w;
 }
 
@@ -135,13 +141,15 @@ ScrollBar scrollBar() {
     int maxS = maxScroll();
     if (maxS <= 0 || g_viewW <= 0 || g_viewH <= 0) return sb;
 
-    int barW = dpi::scale(layout::kScrollBarW);
-    int inset = dpi::scale(layout::kScrollBarInset);
-    int trackX = g_viewW - inset - barW;
-    if (trackX < 0) return sb;
-    int trackTop = inset;
-    int trackBottom = g_viewH - inset;
-    if (trackBottom - trackTop < dpi::scale(layout::kScrollThumbMinH)) return sb;
+    int barW = layout::kScrollBarW;
+    int inset = layout::kScrollBarInset;
+
+    // 滑块贴在内容矩形的右侧，而不是整个窗口的右侧
+    int trackX = g_left + g_viewW - inset - barW;
+    if (trackX < g_left) return sb;
+    int trackTop = g_top + inset;
+    int trackBottom = g_top + g_viewH - inset;
+    if (trackBottom - trackTop < layout::kScrollThumbMinH) return sb;
 
     sb.visible = true;
     sb.track.left = trackX;
@@ -155,7 +163,7 @@ ScrollBar scrollBar() {
     if (content <= 0) content = 1;
 
     int thumbH = (int)((double)trackH * visible / content + 0.5);
-    if (thumbH < dpi::scale(layout::kScrollThumbMinH)) thumbH = dpi::scale(layout::kScrollThumbMinH);
+    if (thumbH < layout::kScrollThumbMinH) thumbH = layout::kScrollThumbMinH;
     if (thumbH > trackH) thumbH = trackH;
 
     int travel = trackH - thumbH;
@@ -194,9 +202,11 @@ int hitTrack(int y) {
     return 0;
 }
 
-void setViewport(int width, int height) {
-    g_viewW = width;
-    g_viewH = height;
+void setViewport(const RECT& contentRect) {
+    g_left = contentRect.left;
+    g_top = contentRect.top;
+    g_viewW = contentRect.right - contentRect.left;
+    g_viewH = contentRect.bottom - contentRect.top;
     // 尺寸变了之后滚动位置可能越界，夹回去
     g_scroll = clampScroll(g_scroll, maxScroll());
 }
@@ -204,7 +214,7 @@ void setViewport(int width, int height) {
 void draw(HDC hdc, const RECT& rect) {
     if (!hdc) return;
 
-    setViewport(rect.right - rect.left, rect.bottom - rect.top);
+    setViewport(rect);
     if (g_viewW <= 0 || g_viewH <= 0) return;
     if (g_text.empty()) return;
 
@@ -213,12 +223,12 @@ void draw(HDC hdc, const RECT& rect) {
     g.SetTextRenderingHint(TextRenderingHintAntiAlias);
 
     FontFamily ff(DSF_TEXT_FONT);
-    Font font(&ff, dpi::scale(layout::kWindowTextSize), FontStyleRegular, UnitPixel);
+    Font font(&ff, dpi::fixedAssetSize(layout::kWindowTextSize), FontStyleRegular, UnitPixel);
     SolidBrush brush(Color(255, 20, 20, 20));
 
-    // 正文区域的左上角（客户区坐标），留白按 DPI 缩放
-    int tx = dpi::scale(layout::kWindowTextPad);
-    int ty = dpi::scale(layout::kWindowTextPad);
+    // 正文版心左上角：内容区左上角 + 留白（客户区坐标）
+    int tx = g_left + layout::kWindowTextPad;
+    int ty = g_top + layout::kWindowTextPad;
 
     // 先按"未滚动"的位置裁剪，再用 TranslateTransform 把整体上移。
     // 裁剪矩形和布局矩形必须同在未滚动坐标系里，这样偏移量不会影响换行结果。

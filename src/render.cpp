@@ -15,7 +15,7 @@ namespace {
 // StringFormat(INT formatFlags = 0, LANGID = LANG_NEUTRAL) 是 public 的，
 // 默认 flags=0（允许换行、不裁剪），和传 nullptr 的行为一致。
 // 测量与绘制必须用同样的 format，否则算出来的高度和实际排版对不上。
-const int kTextSizePx = 16;   // 逻辑像素，用前要过 dpi::scale
+const int kTextSizePx = 16;   // 像素。不随 DPI 缩放，保证高缩放比下依然清晰
 const wchar_t* kBubbleFont = L"幼圆";
 const wchar_t* kInputFont = L"Microsoft YaHei";
 
@@ -23,16 +23,16 @@ const wchar_t* kInputFont = L"Microsoft YaHei";
 
 int bubbleHeight(const std::wstring& text, int bubbleW) {
     HDC screenDC = GetDC(nullptr);
-    if (!screenDC) return dpi::scale(layout::kBubbleMinH);
+    if (!screenDC) return layout::kBubbleMinH;
     HDC memDC = CreateCompatibleDC(screenDC);
 
-    // 字号和留白都要跟着 DPI 走，否则量出来的高度和实际排版对不上
-    const int padX = dpi::scale(layout::kBubblePadX);
-    const int padY = dpi::scale(layout::kBubblePadY);
+    // 字号和留白都不随 DPI 缩放，和 render::bubble() 保持完全一致的算法
+    const int padX = layout::kBubblePadX;
+    const int padY = layout::kBubblePadY;
 
     Graphics g(memDC);
     FontFamily ff(kBubbleFont);
-    Font font(&ff, dpi::scale((float)kTextSizePx), FontStyleRegular, UnitPixel);
+    Font font(&ff, (REAL)kTextSizePx, FontStyleRegular, UnitPixel);
     RectF layoutRect(0, 0, (REAL)(bubbleW - padX * 2), 4000.0f);
     RectF bounds;
     g.MeasureString(text.c_str(), -1, &font, layoutRect, nullptr, &bounds);
@@ -41,8 +41,8 @@ int bubbleHeight(const std::wstring& text, int bubbleW) {
     ReleaseDC(nullptr, screenDC);
 
     int h = (int)ceil(bounds.Height) + padY * 2;
-    if (h < dpi::scale(layout::kBubbleMinH)) h = dpi::scale(layout::kBubbleMinH);
-    if (h > dpi::scale(layout::kBubbleMaxH)) h = dpi::scale(layout::kBubbleMaxH);
+    if (h < layout::kBubbleMinH) h = layout::kBubbleMinH;
+    if (h > layout::kBubbleMaxH) h = layout::kBubbleMaxH;
     return h;
 }
 
@@ -53,8 +53,8 @@ void inputBox(HWND hwnd, const std::wstring& text) {
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = dpi::scale(layout::kChatInputW);
-    bmi.bmiHeader.biHeight = -dpi::scale(layout::kChatInputH);
+    bmi.bmiHeader.biWidth = layout::kChatInputW;
+    bmi.bmiHeader.biHeight = -layout::kChatInputH;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -74,16 +74,16 @@ void inputBox(HWND hwnd, const std::wstring& text) {
 
     Image img(apppath::of(L"input\\input.png").c_str());
     if (img.GetLastStatus() == Ok)
-        g.DrawImage(&img, 0, 0, dpi::scale(layout::kChatInputW), dpi::scale(layout::kChatInputH));
+        g.DrawImage(&img, 0, 0, layout::kChatInputW, layout::kChatInputH);
 
     FontFamily ff(kInputFont);
-    Font font(&ff, dpi::scale(18.0f), FontStyleRegular, UnitPixel);
+    Font font(&ff, 18, FontStyleRegular, UnitPixel);
     SolidBrush brush(Color(255, 40, 40, 40));
 
-    g.DrawString(text.c_str(), -1, &font, PointF(dpi::scale(30.0f), dpi::scale(35.0f)), &brush);
+    g.DrawString(text.c_str(), -1, &font, PointF(30, 35), &brush);
 
     POINT ptSrc = {0, 0};
-    SIZE sz = {dpi::scale(layout::kChatInputW), dpi::scale(layout::kChatInputH)};
+    SIZE sz = {layout::kChatInputW, layout::kChatInputH};
     BLENDFUNCTION blend = {};
     blend.BlendOp = AC_SRC_OVER;
     blend.SourceConstantAlpha = 255;
@@ -127,13 +127,12 @@ void bubble(HWND hwnd, const std::wstring& text, int bubbleW, int bubbleH) {
         g.DrawImage(&img, 0, 0, bubbleW, bubbleH);
 
     FontFamily ff(kBubbleFont);
-    Font font(&ff, dpi::scale((float)kTextSizePx), FontStyleRegular, UnitPixel);
+    Font font(&ff, (REAL)kTextSizePx, FontStyleRegular, UnitPixel);
     SolidBrush brush(Color(255, 40, 40, 40));
 
-    // 留白同样要按 DPI 缩放，否则高 DPI 下文字会顶到气泡边缘；
-    // 而且必须和 bubbleHeight() 里的算法保持一致。
-    const int padX = dpi::scale(layout::kBubblePadX);
-    const int padY = dpi::scale(layout::kBubblePadY);
+    // 留白不随 DPI 缩放，必须和 bubbleHeight() 里的算法保持一致
+    const int padX = layout::kBubblePadX;
+    const int padY = layout::kBubblePadY;
     StringFormat fmt;
     RectF layoutRect((REAL)padX, (REAL)padY,
                      (REAL)(bubbleW - padX * 2),

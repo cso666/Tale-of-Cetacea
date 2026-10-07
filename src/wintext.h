@@ -2,8 +2,11 @@
 #include <windows.h>
 #include <string>
 
-// 白窗口上的正文：启动时从 exe 目录下的 window_text.txt 读入，缓存在内存里。
+// 第一个界面：启动时从 exe 目录下的 window_text.txt 读入正文，缓存在内存里。
 // 内容超过可视区时自动出现一条自绘的竖向滑块。
+//
+// 关于坐标：所有函数都接受"客户区坐标"下的内容矩形。
+// 左侧页签栏占掉的那一条由调用方排除在外，本模块不关心栏本身。
 namespace wintext {
 
     // 要读取的文件名（相对 exe 目录）。改名只需改这一处
@@ -16,12 +19,12 @@ namespace wintext {
     // 当前正文
     const std::wstring& get();
 
-    // 告知当前可视区尺寸（客户区大小）。每次绘制前调用。
+    // 告知内容区矩形（客户区坐标）。每次绘制前调用。
     // 尺寸变化后会把滚动偏移夹回合法范围。
-    void setViewport(int width, int height);
+    void setViewport(const RECT& contentRect);
 
-    // 把正文画进给定 DC 的 rect 区域内（按宽度自动换行、按滚动偏移裁剪），
-    // 需要时并在右侧画出滑块。
+    // 把正文画进 rect（客户区坐标）内：按宽度自动换行、按滚动偏移裁剪，
+    // 需要时并在该矩形右侧画出滑块。
     // 由调用方负责背景擦除和 EndPaint，这样可以配合双缓冲。
     void draw(HDC hdc, const RECT& rect);
 

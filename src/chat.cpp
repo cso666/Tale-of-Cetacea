@@ -1,6 +1,7 @@
 #include "chat.h"
 #include "config.h"
 #include "state.h"
+#include "settings.h"
 #include "http.h"
 #include "jsonutils.h"
 #include "textutils.h"
@@ -31,6 +32,24 @@ std::string buildBodyPrefix() {
     return s;
 }
 
+// 好感度提示。只在宠物模式下才会拼进 system prompt。
+std::string buildFavorInstruction(int favor) {
+    return "[system]当前好感度：" + std::to_string(favor) +
+        "。请在回复的最末尾加上 [favor+X] 或 [favor-X]（X 为 -25 到 +25 的整数），"
+        "表示这次对话让你好感度的变化。除了这个标记，不要在正文里提到好感度系统。";
+}
+
+// 按模式选 system prompt。
+//
+// 开关"关"时用 Assistant.txt；同时【完全不发送】好感度相关的任何内容 ——
+// 连那句 [system] 提示都不出现，助手不会知道自己有"好感度"这回事。
+std::string buildSystemPrompt(int mode, int favor) {
+    if (mode == state::kModeAssistant) {
+        return config::assistant;
+    }
+    return config::personality + "\n\n" + buildFavorInstruction(favor);
+}
+
 } // namespace
 
 int extractFavorTag(std::string& reply) {
@@ -55,12 +74,13 @@ int extractFavorTag(std::string& reply) {
     return (int)v;
 }
 
-void summarizeHistory(const std::string& key) {
+void summarize(int mode, const std::string& key) {
     std::string snapshot;
     {
         std::lock_guard<std::mutex> lk(state::g_mutex);
-        if (state::chatHistory.empty()) return;
-        snapshot = state::chatHistory;
+        const std::string& h = state::historyRef(mode);
+        if (h.empty()) return;
+        snapshot = h;
     }
 
     std::string body = buildBodyPrefix();
@@ -78,38 +98,37 @@ void summarizeHistory(const std::string& key) {
     if (summary.empty()) return;
 
     std::lock_guard<std::mutex> lk(state::g_mutex);
-    state::chatHistory = "[对话摘要]\n" + summary + "\n\n[最近对话]\n";
-    state::chatRound = 0;
-    state::saveHistory();
+    state::historyRef(mode) = "[对话摘要]\n" + summary + "\n\n[最近对话]\n";
+    state::setRoundOf(mode, 0);
+    state::persist();
 }
 
-void ask(HWND hwnd, std::string key, std::string userMsg) {
-    // 用户消息在 ui 层发送时就已经写入历史，这里只做快照
+void ask(HWND hwnd, int mode, std::string key, std::string userMsg) {
+    // 助手模式不碰好感度：既不发送、也不解析、也不更新
+    const bool favorEnabled = (mode == state::kModePet);
+
     std::string historySnapshot;
-    std::string systemPrompt;
     int favorSnapshot = 0;
     bool needSummary = false;
 
     {
         std::lock_guard<std::mutex> lk(state::g_mutex);
-        favorSnapshot = state::g_favor;
-        needSummary = (state::chatRound >= kSummaryAfterRounds && !state::chatHistory.empty());
+        favorSnapshot = state::favorOf(mode);
+        needSummary = (state::roundOf(mode) >= kSummaryAfterRounds &&
+                       !state::historyRef(mode).empty());
     }
 
     // 网络请求一律在锁外，否则会卡住 UI 线程的 WM_TIMER 和存档写入
-    if (needSummary) summarizeHistory(key);
+    if (needSummary) summarize(mode, key);
 
     {
         std::lock_guard<std::mutex> lk(state::g_mutex);
-        historySnapshot = state::chatHistory;
+        historySnapshot = state::historyRef(mode);
     }
 
     // FIX: 原实现把好感度提示和用户消息拼进同一条 user message，模型分不清
-    //      "谁在说话"。现在好感度写进 system，历史单独作为一条 user 消息。
-    std::string favorLine = "[system]当前好感度：" + std::to_string(favorSnapshot) +
-        "。请在回复的最末尾加上 [favor+X] 或 [favor-X]（X 为 -25 到 +25 的整数），"
-        "表示这次对话让你好感度的变化。除了这个标记，不要在正文里提到好感度系统。";
-    systemPrompt = config::personality + "\n\n" + favorLine;
+    //      "谁在说话"。现在 system prompt 独立，历史单独作为一条 user 消息。
+    std::string systemPrompt = buildSystemPrompt(mode, favorSnapshot);
 
     std::string body = buildBodyPrefix();
     body += "{\"role\":\"system\",\"content\":\"" + jsonutils::escape(systemPrompt) + "\"}";
@@ -129,16 +148,19 @@ void ask(HWND hwnd, std::string key, std::string userMsg) {
         std::string content;
         if (r.status == 200 && jsonutils::findString(r.body, "content", content)) {
             // 解析放锁外，锁内只做赋值和存盘
-            int delta = extractFavorTag(content);
+            int delta = 0;
+            if (favorEnabled) {
+                delta = extractFavorTag(content);
+            }
             content = textutils::trimAscii(content);
             if (content.empty()) content = "……";
 
             {
                 std::lock_guard<std::mutex> lk(state::g_mutex);
-                state::addFavor(delta);
-                state::appendTurn("assistant", content);   // 已剥掉 favor 标记
-                state::chatRound++;
-                state::saveHistory();
+                if (favorEnabled) state::addFavor(mode, delta);
+                state::appendTurn(mode, "assistant", content);   // 已剥掉 favor 标记
+                state::incRound(mode);
+                state::persist();
             }
             display = textutils::fromUtf8(content);
         } else {

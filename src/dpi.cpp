@@ -72,7 +72,10 @@ float g_factor = 1.0f;
 bool  g_inited = false;
 
 void recompute() {
-    g_factor = (float)g_dpi / 96.0f;
+    // g_factor 始终表示"窗口尺寸"的换算：96 / 当前DPI。
+    // 100% → 1.0，150% → 0.6667（缩小），200% → 0.5。
+    // 固定像素资源（桌宠、字号）用它的倒数，见 fixedAssetSize()。
+    if (g_dpi > 0) g_factor = 96.0f / (float)g_dpi;
 }
 
 } // namespace
@@ -115,12 +118,21 @@ float factor() {
     return g_factor;
 }
 
-int scale(int logicalPixels) {
-    return (int)(logicalPixels * g_factor + 0.5f);
+int windowSize(int designPixels) {
+    // g_factor = 96/DPI，乘完就是"除以缩放比例"，150% 下 800 → 533
+    return (int)(designPixels * g_factor + 0.5f);
 }
 
-float scale(float logicalPixels) {
-    return logicalPixels * g_factor;
+int fixedAssetSize(int designPixels) {
+    // 和 windowSize 相反：乘缩放比例（即除以 g_factor），150% 下 180 → 270。
+    // 用于桌宠帧图这类固定像素资源，抵消"进程不再被系统自动拉伸"带来的缩小。
+    if (g_factor <= 0.0f) return designPixels;
+    return (int)(designPixels / g_factor + 0.5f);
+}
+
+float fixedAssetSize(float designPixels) {
+    if (g_factor <= 0.0f) return designPixels;
+    return designPixels / g_factor;
 }
 
 } // namespace dpi
